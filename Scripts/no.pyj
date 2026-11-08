@@ -1,0 +1,13 @@
+#!python
+# \no - answers whichever is running: the gold seller (goldseller.pyj) or the market maker (marketmaker.pyj)
+System = JavaClass("java.lang.System")
+Dbl = JavaClass("java.lang.Double")
+sent = False
+for name in ["goldseller", "marketmaker"]:
+  beat = System.getProperty("minescript." + name + ".beat")
+  if beat is not None and str(beat) != "":
+    if System.currentTimeMillis() - Dbl.valueOf(str(beat)) < 2000:
+      System.setProperty("minescript." + name + ".answer", "no")
+      sent = True
+if not sent:
+  print("Neither the gold seller nor the market maker is running")

@@ -1,0 +1,982 @@
+#!python
+
+Minecraft = JavaClass("net.minecraft.client.Minecraft")
+Blocks = JavaClass("net.minecraft.world.level.block.Blocks")
+BlockPos = JavaClass("net.minecraft.core.BlockPos")
+Level = JavaClass("net.minecraft.world.level.Level")
+ParticleTypes = JavaClass("net.minecraft.core.particles.ParticleTypes")
+Component = JavaClass("net.minecraft.network.chat.Component")
+ChatFormatting = JavaClass("net.minecraft.ChatFormatting")
+Predicate = JavaClass("java.util.function.Predicate")
+JMath = JavaClass("java.lang.Math")
+JDouble = JavaClass("java.lang.Double")
+System = JavaClass("java.lang.System")
+
+MIN_CLUSTER = 2
+HOTSPOT_SIZE = 5
+CLUSTER_GAP = 13.0
+CLUSTER_EVERY = 20
+
+GLOW_ALL = True
+GLOW_RANGE = 256.0
+GLOW_MAX = 120
+GLOW_SINGLE_COLOR = (1.0, 1.0, 0.2)
+GLOW_GROUP_COLOR = (1.0, 0.55, 0.0)
+GLOW_HOTSPOT_COLOR = (1.0, 0.1, 0.35)
+GLOW_FILL_OPACITY = 0.3
+
+MARKERS = True
+MARKER_COLOR = (1.0, 0.5, 0.0)
+MARKER_RANGE = 128.0
+MAX_MARKERS = 20
+
+SCREEN_TEXT = True
+TEXT_Y_OFFSET = 80
+TEXT_COLOR = (1.0, 0.67, 0.0)
+TEXT2_COLOR = (1.0, 1.0, 0.33)
+TEXT_BACKGROUND = True
+TEXT_BG_OPACITY = 0.6
+
+RADAR = True
+RADAR_RADIUS = 36
+RADAR_DOT = 6
+RADAR_COLOR = (1.0, 0.67, 0.0)
+ON_TARGET_DEGREES = 8.0
+
+BEAM_HEIGHT = 200
+BEAM_DENSITY = 40
+BEAM_RADIUS = 0.5
+HELIX_PER_TICK = 10
+HELIX_RADIUS = 1.4
+BEAM_COLOR = (1.0, 0.35, 0.0)
+HOTSPOT_BEAM_COLOR = (1.0, 0.1, 0.35)
+BEAM_LIFETIME = 30
+BEAM_BASE_SIZE = 2.0
+SIZE_FULL_DIST = 8.0
+MAX_SCALE = 48.0
+
+RING = True
+RING_COLOR = (1.0, 0.9, 0.1)
+RING_RADIUS = 1.6
+
+POINTER = True
+POINTER_COLOR = (0.1, 1.0, 0.2)
+POINTER_START = 1.5
+POINTER_LENGTH = 6.0
+POINTER_Y_OFFSET = -0.6
+POINTER_SIZE = 1.6
+POINTER_HIDE_WITHIN = 6.0
+
+ANNOUNCE_IN_CHAT = True
+
+CHUNKS_PER_TICK = 8
+SECTION_BUDGET = 2
+
+PARTICLE = ParticleTypes.END_ROD
+RUN_KEY = "minescript.anchorfinder.token"
+BEAT_KEY = "minescript.anchorfinder.beat"
+
+def to_int(v):
+  return JDouble.valueOf(str(v)).intValue()
+
+def short_error(e):
+  return str(e).split("\n")[0]
+
+def rgb_int(c):
+  if c is None:
+    return None
+  return to_int(to_int(c[0] * 255) * 65536 + to_int(c[1] * 255) * 256 + to_int(c[2] * 255))
+
+def argb_int(c):
+  return to_int(rgb_int(c) - 16777216)
+
+def argb_alpha(c, a):
+  v = JMath.floor(a * 255.0) * 16777216.0 + rgb_int(c) * 1.0
+  if v >= 2147483648.0:
+    v = v - 4294967296.0
+  return to_int(v)
+
+mc = Minecraft.getInstance()
+ANCHOR = Blocks.RESPAWN_ANCHOR
+ARROWS = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
+TWO_PI = 6.283185
+BEAM_FADE = rgb_int(BEAM_COLOR)
+HOTSPOT_FADE = rgb_int(HOTSPOT_BEAM_COLOR)
+MARKER_FADE = rgb_int(MARKER_COLOR)
+MARKER_LIFE = to_int(6)
+RING_FADE = rgb_int(RING_COLOR)
+POINTER_FADE = rgb_int(POINTER_COLOR)
+TEXT_ARGB = argb_int(TEXT_COLOR)
+TEXT2_ARGB = argb_int(TEXT2_COLOR)
+TEXT_BG_ARGB = argb_alpha((0.0, 0.0, 0.0), TEXT_BG_OPACITY)
+RADAR_ARGB = argb_int(RADAR_COLOR)
+RADAR_EDGE_ARGB = argb_alpha((0.0, 0.0, 0.0), 0.85)
+ON_TARGET_COS = JMath.cos(JMath.toRadians(ON_TARGET_DEGREES))
+GLOW_SINGLE_ARGB = argb_int(GLOW_SINGLE_COLOR)
+GLOW_GROUP_ARGB = argb_int(GLOW_GROUP_COLOR)
+GLOW_HOTSPOT_ARGB = argb_int(GLOW_HOTSPOT_COLOR)
+GLOW_SINGLE_FILL = argb_alpha(GLOW_SINGLE_COLOR, GLOW_FILL_OPACITY)
+GLOW_GROUP_FILL = argb_alpha(GLOW_GROUP_COLOR, GLOW_FILL_OPACITY)
+GLOW_HOTSPOT_FILL = argb_alpha(GLOW_HOTSPOT_COLOR, GLOW_FILL_OPACITY)
+GAP2 = CLUSTER_GAP * CLUSTER_GAP
+BEAM_LIFE = to_int(BEAM_LIFETIME)
+RING_LIFE = to_int(8)
+POINTER_LIFE = to_int(2)
+
+anchor_checks = []
+for st in ANCHOR.getStateDefinition().getPossibleStates():
+  anchor_checks.append(Predicate.isEqual(st))
+
+known = {}
+sweep_found = {}
+sweep_chunks = []
+sweep_index = 0
+sweep_section = 0
+clusters = []
+anchor_group = {}
+glow_active = False
+glow_ok = True
+glow_fail_reason = ""
+glow_reported = False
+announced = {}
+last_level = None
+tick_count = 0
+use_engine = True
+scale_ok = True
+color_ok = True
+listener_id = None
+my_token = None
+
+display_mode = "off"
+display_checked = False
+hud_cb = None
+hud_drawn = False
+hud_failed = False
+hud_fail_reason = ""
+screen_line1 = None
+screen_line2 = None
+screen_radar = None
+fill_ok = True
+fill_fail_reason = ""
+fill_reported = False
+text_searched = False
+text_method = None
+text_kind = None
+text_argc = 0
+text_centered = False
+bar_method = None
+bar_argc = 0
+
+def style(p, color, fade, scale, life):
+  global scale_ok, color_ok
+  try:
+    p.setLifetime(life)
+  except Exception:
+    pass
+  if scale_ok and scale > 1.0:
+    try:
+      p.scale(scale)
+    except Exception:
+      scale_ok = False
+  if color_ok and color is not None:
+    try:
+      p.setColor(color[0], color[1], color[2])
+      p.setFadeColor(fade)
+    except Exception:
+      color_ok = False
+
+def spawn_p(level, x, y, z, color, fade, scale, life):
+  global use_engine
+  if use_engine:
+    p = None
+    try:
+      p = mc.particleEngine.createParticle(PARTICLE, x, y, z, 0.0, 0.0, 0.0)
+    except Exception:
+      use_engine = False
+    if use_engine:
+      if p is not None:
+        style(p, color, fade, scale, life)
+      return
+  level.addParticle(PARTICLE, x, y, z, 0.0, 0.0, 0.0)
+
+def dist_scale(x, y, z, ex, ey, ez):
+  d = JMath.sqrt((x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2)
+  k = d / SIZE_FULL_DIST
+  if k < 1.0:
+    k = 1.0
+  if k > MAX_SCALE:
+    k = MAX_SCALE
+  return k
+
+def draw_beam(level, t, ex, ey, ez):
+  x = t[0] + 0.5
+  y = t[1] + 1.0
+  z = t[2] + 0.5
+  color = BEAM_COLOR
+  fade = BEAM_FADE
+  if t[3] >= HOTSPOT_SIZE:
+    color = HOTSPOT_BEAM_COLOR
+    fade = HOTSPOT_FADE
+  for i in range(BEAM_DENSITY):
+    a = JMath.random() * TWO_PI
+    r = JMath.sqrt(JMath.random()) * BEAM_RADIUS
+    px = x + JMath.cos(a) * r
+    py = y + JMath.random() * BEAM_HEIGHT
+    pz = z + JMath.sin(a) * r
+    spawn_p(level, px, py, pz, color, fade,
+            BEAM_BASE_SIZE * dist_scale(px, py, pz, ex, ey, ez), BEAM_LIFE)
+  for i in range(HELIX_PER_TICK):
+    h = JMath.random() * BEAM_HEIGHT
+    a = h * 0.25 + tick_count * 0.15
+    if i % 2 == 1:
+      a = a + 3.14159
+    px = x + JMath.cos(a) * HELIX_RADIUS
+    py = y + h
+    pz = z + JMath.sin(a) * HELIX_RADIUS
+    spawn_p(level, px, py, pz, RING_COLOR, RING_FADE,
+            BEAM_BASE_SIZE * dist_scale(px, py, pz, ex, ey, ez), BEAM_LIFE)
+
+def draw_ring(level, t, ex, ey, ez):
+  x = t[0] + 0.5
+  y = t[1] + 1.15
+  z = t[2] + 0.5
+  base = RING_RADIUS + t[4]
+  pulse = base * (0.85 + 0.15 * JMath.sin(tick_count * 0.3))
+  n = to_int(24 + t[4] * 6)
+  for i in range(n):
+    a = TWO_PI * float(i) / float(n) + tick_count * 0.1
+    px = x + JMath.cos(a) * pulse
+    pz = z + JMath.sin(a) * pulse
+    spawn_p(level, px, y, pz, RING_COLOR, RING_FADE,
+            1.5 * dist_scale(px, y, pz, ex, ey, ez), RING_LIFE)
+
+def draw_box(level, d, ex, ey, ez):
+  for ox in (0.0, 1.0):
+    for oy in (0.0, 1.0):
+      for oz in (0.0, 1.0):
+        px = d[0] + ox
+        py = d[1] + oy
+        pz = d[2] + oz
+        spawn_p(level, px, py, pz, MARKER_COLOR, MARKER_FADE,
+                dist_scale(px, py, pz, ex, ey, ez), MARKER_LIFE)
+  px = d[0] + 0.5
+  py = d[1] + 0.5
+  pz = d[2] + 0.5
+  spawn_p(level, px, py, pz, MARKER_COLOR, MARKER_FADE,
+          1.5 * dist_scale(px, py, pz, ex, ey, ez), MARKER_LIFE)
+
+def draw_markers(level, t, ex, ey, ez):
+  n = 0
+  r2 = MARKER_RANGE * MARKER_RANGE
+  for c in clusters:
+    if n >= MAX_MARKERS:
+      break
+    if t is not None and c[0] == t[0] and c[1] == t[1] and c[2] == t[2]:
+      continue
+    if (c[0] + 0.5 - ex) ** 2 + (c[1] + 0.5 - ey) ** 2 + (c[2] + 0.5 - ez) ** 2 > r2:
+      continue
+    draw_box(level, c, ex, ey, ez)
+    n = n + 1
+
+def draw_pointer(level, t):
+  p = mc.player
+  sx = p.getX()
+  sy = p.getEyeY() + POINTER_Y_OFFSET
+  sz = p.getZ()
+  dx = t[0] + 0.5 - sx
+  dy = t[1] + 0.5 - sy
+  dz = t[2] + 0.5 - sz
+  dist = JMath.sqrt(dx * dx + dy * dy + dz * dz)
+  if dist < POINTER_HIDE_WITHIN:
+    return
+  ux = dx / dist
+  uy = dy / dist
+  uz = dz / dist
+  length = POINTER_LENGTH
+  if length > dist - 2.0:
+    length = dist - 2.0
+  if length <= POINTER_START:
+    return
+  steps = to_int((length - POINTER_START) / 0.3)
+  if steps < 1:
+    steps = 1
+  for i in range(steps + 1):
+    d = POINTER_START + (length - POINTER_START) * float(i) / float(steps)
+    spawn_p(level, sx + ux * d, sy + uy * d, sz + uz * d,
+            POINTER_COLOR, POINTER_FADE, POINTER_SIZE, POINTER_LIFE)
+  hx = -uz
+  hz = ux
+  hl = JMath.sqrt(hx * hx + hz * hz)
+  if hl < 0.01:
+    hx = 1.0
+    hz = 0.0
+    hl = 1.0
+  hx = hx / hl
+  hz = hz / hl
+  for j in range(1, 6):
+    back = length - j * 0.25
+    side = j * 0.2
+    bx = sx + ux * back
+    by = sy + uy * back
+    bz = sz + uz * back
+    spawn_p(level, bx + hx * side, by, bz + hz * side,
+            POINTER_COLOR, POINTER_FADE, POINTER_SIZE, POINTER_LIFE)
+    spawn_p(level, bx - hx * side, by, bz - hz * side,
+            POINTER_COLOR, POINTER_FADE, POINTER_SIZE, POINTER_LIFE)
+
+def in_overworld(level):
+  return level.dimension().equals(Level.OVERWORLD)
+
+def start_sweep():
+  global sweep_chunks, sweep_index, sweep_section, sweep_found
+  pcx = to_int(JMath.floor(mc.player.getX() / 16.0))
+  pcz = to_int(JMath.floor(mc.player.getZ() / 16.0))
+  r = to_int(mc.options.getEffectiveRenderDistance() + 1)
+  sweep_chunks = [(pcx, pcz)]
+  for k in range(1, r + 1):
+    for d in range(-k, k + 1):
+      sweep_chunks.append((to_int(pcx + d), to_int(pcz - k)))
+      sweep_chunks.append((to_int(pcx + d), to_int(pcz + k)))
+    for d in range(-k + 1, k):
+      sweep_chunks.append((to_int(pcx - k), to_int(pcz + d)))
+      sweep_chunks.append((to_int(pcx + k), to_int(pcz + d)))
+  sweep_index = 0
+  sweep_section = 0
+  sweep_found = {}
+
+def maybe_has_anchor(sec):
+  for check in anchor_checks:
+    if sec.maybeHas(check):
+      return True
+  return False
+
+def scan_section(level, sec, i, cx, cz):
+  base_y = to_int(level.getSectionYFromSectionIndex(to_int(i)) * 16)
+  for ly in range(16):
+    for lz in range(16):
+      for lx in range(16):
+        if ANCHOR.equals(sec.getBlockState(lx, ly, lz).getBlock()):
+          x = to_int(cx * 16 + lx)
+          y = to_int(base_y + ly)
+          z = to_int(cz * 16 + lz)
+          key = f"{x},{y},{z}"
+          sweep_found[key] = (x, y, z)
+          known[key] = (x, y, z)
+
+def step_sweep(level):
+  global sweep_index, sweep_section, known
+  chunks_done = 0
+  full_scans = 0
+  while chunks_done < CHUNKS_PER_TICK and full_scans < SECTION_BUDGET:
+    if sweep_index >= len(sweep_chunks):
+      known = dict(sweep_found)
+      start_sweep()
+      return
+    c = sweep_chunks[sweep_index]
+    cx = to_int(c[0])
+    cz = to_int(c[1])
+    if not level.getChunkSource().hasChunk(cx, cz):
+      sweep_index += 1
+      sweep_section = 0
+      chunks_done += 1
+      continue
+    sections = level.getChunk(cx, cz).getSections()
+    while sweep_section < len(sections):
+      i = sweep_section
+      sweep_section += 1
+      sec = sections[i]
+      if sec.hasOnlyAir() or not maybe_has_anchor(sec):
+        continue
+      scan_section(level, sec, i, cx, cz)
+      full_scans += 1
+      if full_scans >= SECTION_BUDGET:
+        break
+    if sweep_section >= len(sections):
+      sweep_index += 1
+      sweep_section = 0
+      chunks_done += 1
+
+def cell(v):
+  return to_int(JMath.floor(v / CLUSTER_GAP))
+
+def build_clusters(level):
+  global clusters, anchor_group
+  sizes = {}
+  for key in list(known.keys()):
+    p = known[key]
+    if not ANCHOR.equals(level.getBlockState(BlockPos(p[0], p[1], p[2])).getBlock()):
+      del known[key]
+      if key in sweep_found:
+        del sweep_found[key]
+  grid = {}
+  for key in known.keys():
+    p = known[key]
+    gk = f"{cell(p[0])},{cell(p[1])},{cell(p[2])}"
+    if gk not in grid:
+      grid[gk] = []
+    grid[gk].append(key)
+  visited = {}
+  result = []
+  for start in known.keys():
+    if start in visited:
+      continue
+    visited[start] = True
+    queue = [start]
+    qi = 0
+    while qi < len(queue):
+      k = queue[qi]
+      qi = qi + 1
+      p = known[k]
+      gx = cell(p[0])
+      gy = cell(p[1])
+      gz = cell(p[2])
+      for ddx in (-1, 0, 1):
+        for ddy in (-1, 0, 1):
+          for ddz in (-1, 0, 1):
+            gk = f"{to_int(gx + ddx)},{to_int(gy + ddy)},{to_int(gz + ddz)}"
+            if gk not in grid:
+              continue
+            for k2 in grid[gk]:
+              if k2 in visited:
+                continue
+              q = known[k2]
+              if (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2 <= GAP2:
+                visited[k2] = True
+                queue.append(k2)
+    for k in queue:
+      sizes[k] = len(queue)
+    if len(queue) < MIN_CLUSTER:
+      continue
+    sx = 0.0
+    sy = 0.0
+    sz = 0.0
+    for k in queue:
+      p = known[k]
+      sx = sx + p[0]
+      sy = sy + p[1]
+      sz = sz + p[2]
+    n = float(len(queue))
+    cx = sx / n
+    cy = sy / n
+    cz = sz / n
+    spread = 0.0
+    for k in queue:
+      p = known[k]
+      d = JMath.sqrt((p[0] - cx) ** 2 + (p[2] - cz) ** 2)
+      if d > spread:
+        spread = d
+    result.append([cx, cy, cz, len(queue), spread])
+  clusters = result
+  anchor_group = sizes
+  announce_new()
+
+def announce_new():
+  if not ANNOUNCE_IN_CHAT:
+    return
+  p = mc.player
+  for c in clusters:
+    key = f"{to_int(JMath.floor(c[0] / 4.0))},{to_int(JMath.floor(c[1] / 4.0))},{to_int(JMath.floor(c[2] / 4.0))},{c[3]}"
+    if key in announced:
+      continue
+    announced[key] = True
+    d = to_int(JMath.sqrt((c[0] + 0.5 - p.getX()) ** 2 + (c[1] + 0.5 - p.getY()) ** 2 + (c[2] + 0.5 - p.getZ()) ** 2))
+    pos = f"{to_int(c[0])} {to_int(c[1])} {to_int(c[2])} ({d} blocks)"
+    if c[3] >= HOTSPOT_SIZE:
+      print(f"Anchor finder: HOTSPOT - {c[3]} anchors together at {pos}")
+    elif c[3] > 1:
+      print(f"Anchor finder: {c[3]} anchors together at {pos}")
+    else:
+      print(f"Anchor finder: respawn anchor at {pos}")
+
+def nearest_cluster():
+  px = mc.player.getX()
+  py = mc.player.getY()
+  pz = mc.player.getZ()
+  best = None
+  best_d = 0.0
+  for c in clusters:
+    d = (c[0] + 0.5 - px) ** 2 + (c[1] + 0.5 - py) ** 2 + (c[2] + 0.5 - pz) ** 2
+    if best is None or d < best_d:
+      best = c
+      best_d = d
+  return best
+
+def find_text_method(graphics, font):
+  sample = Component.literal("x")
+  best = None
+  best_score = -1
+  names = set()
+  for m in graphics.getClass().getMethods():
+    pt = m.getParameterTypes()
+    if len(pt) < 5 or len(pt) > 6:
+      continue
+    if not pt[0].isInstance(font):
+      continue
+    names.add(str(m.getName()))
+    if str(pt[2].getName()) != "int" or str(pt[3].getName()) != "int" or str(pt[4].getName()) != "int":
+      continue
+    if len(pt) == 6 and str(pt[5].getName()) != "boolean":
+      continue
+    kind = None
+    if str(pt[1].getName()) == "java.lang.String":
+      kind = "str"
+    elif pt[1].isInstance(sample):
+      kind = "comp"
+    if kind is None:
+      continue
+    lname = str(m.getName()).lower()
+    centered = "center" in lname
+    score = 0
+    if kind == "str":
+      score += 4
+    if len(pt) == 6:
+      score += 2
+    if not centered:
+      score += 1
+    if score > best_score:
+      best_score = score
+      best = (m, kind, len(pt), centered)
+  return (best, names)
+
+def draw_text(graphics, font, text, w, y, color):
+  obj = text
+  if text_kind == "comp":
+    obj = Component.literal(text)
+  if text_centered:
+    x = to_int(w / 2)
+  else:
+    x = to_int((w - font.width(text)) / 2)
+  if text_argc == 6:
+    text_method.invoke(graphics, JavaArray((font, obj, x, to_int(y), color, True)))
+  else:
+    text_method.invoke(graphics, JavaArray((font, obj, x, to_int(y), color)))
+
+def gfill(graphics, x1, y1, x2, y2, color):
+  global fill_ok, fill_fail_reason
+  if not fill_ok:
+    return
+  try:
+    graphics.fill(to_int(x1), to_int(y1), to_int(x2), to_int(y2), color)
+  except Exception as e:
+    fill_ok = False
+    fill_fail_reason = short_error(e)
+
+def draw_background(graphics, font, lines, w, y):
+  if not TEXT_BACKGROUND:
+    return
+  maxw = 0
+  n = 0
+  for s in lines:
+    if s is not None:
+      n = n + 1
+      sw = font.width(s)
+      if sw > maxw:
+        maxw = sw
+  if n == 0:
+    return
+  x1 = (w - maxw) / 2 - 4
+  gfill(graphics, x1, y - 3, x1 + maxw + 8, y + n * 11 + 1, TEXT_BG_ARGB)
+
+def draw_radar(graphics, w, h):
+  r = screen_radar
+  if not RADAR or r is None:
+    return
+  cx = w / 2
+  cy = h / 2
+  if r[2]:
+    for sx in (-1, 1):
+      for sy in (-1, 1):
+        bx = cx + sx * 9
+        by = cy + sy * 9
+        gfill(graphics, bx - 3, by - 3, bx + 3, by + 3, RADAR_EDGE_ARGB)
+        gfill(graphics, bx - 2, by - 2, bx + 2, by + 2, RADAR_ARGB)
+    return
+  s = RADAR_DOT / 2
+  px = cx + r[0] * RADAR_RADIUS
+  py = cy - r[1] * RADAR_RADIUS
+  gfill(graphics, px - s - 1, py - s - 1, px + s + 1, py + s + 1, RADAR_EDGE_ARGB)
+  gfill(graphics, px - s, py - s, px + s, py + s, RADAR_ARGB)
+  for k in (1, 2):
+    dd = RADAR_RADIUS - k * (RADAR_DOT + 2)
+    tx = cx + r[0] * dd
+    ty = cy - r[1] * dd
+    q = s - k
+    if q < 1:
+      q = 1
+    gfill(graphics, tx - q, ty - q, tx + q, ty + q, RADAR_ARGB)
+
+def calc_radar(p, t):
+  yaw = JMath.toRadians(p.getYRot())
+  pitch = JMath.toRadians(p.getXRot())
+  dx = t[0] + 0.5 - p.getX()
+  dy = t[1] + 0.5 - p.getEyeY()
+  dz = t[2] + 0.5 - p.getZ()
+  n = JMath.sqrt(dx * dx + dy * dy + dz * dz)
+  if n < 0.001:
+    return (0.0, 0.0, True)
+  dx = dx / n
+  dy = dy / n
+  dz = dz / n
+  cp = JMath.cos(pitch)
+  sp = JMath.sin(pitch)
+  cyw = JMath.cos(yaw)
+  syw = JMath.sin(yaw)
+  fx = -syw * cp
+  fy = -sp
+  fz = cyw * cp
+  rx = -cyw
+  rz = -syw
+  ux = -rz * fy
+  uy = rz * fx - rx * fz
+  uz = rx * fy
+  df = dx * fx + dy * fy + dz * fz
+  if df >= ON_TARGET_COS:
+    return (0.0, 0.0, True)
+  dr = dx * rx + dz * rz
+  du = dx * ux + dy * uy + dz * uz
+  m = JMath.sqrt(dr * dr + du * du)
+  if m < 0.0001:
+    return (0.0, -1.0, False)
+  return (dr / m, du / m, False)
+
+def draw_glow(graphics, w, h):
+  if not GLOW_ALL or not glow_active or not glow_ok:
+    return
+  p = mc.player
+  if p is None:
+    return
+  fov = 70.0
+  try:
+    fov = JDouble.valueOf(str(mc.options.fov().get())).doubleValue()
+  except Exception:
+    pass
+  f = (h / 2.0) / JMath.tan(JMath.toRadians(fov / 2.0))
+  yaw = JMath.toRadians(p.getYRot())
+  pitch = JMath.toRadians(p.getXRot())
+  cp = JMath.cos(pitch)
+  sp = JMath.sin(pitch)
+  cyw = JMath.cos(yaw)
+  syw = JMath.sin(yaw)
+  fx = -syw * cp
+  fy = -sp
+  fz = cyw * cp
+  rx = -cyw
+  rz = -syw
+  ux = -rz * fy
+  uy = rz * fx - rx * fz
+  uz = rx * fy
+  ex = p.getX()
+  ey = p.getEyeY()
+  ez = p.getZ()
+  cx = w / 2.0
+  cy = h / 2.0
+  r2 = GLOW_RANGE * GLOW_RANGE
+  drawn = 0
+  for key in known.keys():
+    if drawn >= GLOW_MAX:
+      break
+    a = known[key]
+    dx = a[0] + 0.5 - ex
+    dy = a[1] + 0.5 - ey
+    dz = a[2] + 0.5 - ez
+    if dx * dx + dy * dy + dz * dz > r2:
+      continue
+    df = dx * fx + dy * fy + dz * fz
+    if df < 0.3:
+      continue
+    sx = cx + (dx * rx + dz * rz) / df * f
+    sy = cy - (dx * ux + dy * uy + dz * uz) / df * f
+    if sx < -20 or sx > w + 20 or sy < -20 or sy > h + 20:
+      continue
+    half = 0.6 / df * f
+    if half < 3.0:
+      half = 3.0
+    if half > 40.0:
+      half = 40.0
+    size = 1
+    if key in anchor_group:
+      size = anchor_group[key]
+    if size >= HOTSPOT_SIZE:
+      edge = GLOW_HOTSPOT_ARGB
+      fill = GLOW_HOTSPOT_FILL
+    elif size > 1:
+      edge = GLOW_GROUP_ARGB
+      fill = GLOW_GROUP_FILL
+    else:
+      edge = GLOW_SINGLE_ARGB
+      fill = GLOW_SINGLE_FILL
+    th = 1
+    if half > 10.0:
+      th = 2
+    x1 = sx - half
+    y1 = sy - half
+    x2 = sx + half
+    y2 = sy + half
+    gfill(graphics, x1, y1, x2, y2, fill)
+    gfill(graphics, x1 - 1, y1 - 1, x2 + 1, y1 - 1 + th, edge)
+    gfill(graphics, x1 - 1, y2 + 1 - th, x2 + 1, y2 + 1, edge)
+    gfill(graphics, x1 - 1, y1 - 1, x1 - 1 + th, y2 + 1, edge)
+    gfill(graphics, x2 + 1 - th, y1 - 1, x2 + 1, y2 + 1, edge)
+    drawn = drawn + 1
+
+def on_hud(graphics, delta):
+  global hud_drawn, hud_failed, hud_fail_reason, text_searched
+  global text_method, text_kind, text_argc, text_centered
+  global glow_ok, glow_fail_reason
+  hud_drawn = True
+  if hud_failed:
+    return
+  try:
+    draw_glow(graphics, graphics.guiWidth(), graphics.guiHeight())
+  except Exception as e:
+    glow_ok = False
+    glow_fail_reason = short_error(e)
+  if screen_line1 is None:
+    return
+  l1 = screen_line1
+  l2 = screen_line2
+  try:
+    font = mc.font
+    if not text_searched:
+      text_searched = True
+      found = find_text_method(graphics, font)
+      if found[0] is None:
+        hud_failed = True
+        hud_fail_reason = "no text method; candidates: " + ", ".join(list(found[1]))
+        return
+      text_method = found[0][0]
+      text_kind = found[0][1]
+      text_argc = found[0][2]
+      text_centered = found[0][3]
+    w = graphics.guiWidth()
+    h = graphics.guiHeight()
+    draw_radar(graphics, w, h)
+    y = h / 2 + TEXT_Y_OFFSET
+    draw_background(graphics, font, [l1, l2], w, y)
+    draw_text(graphics, font, l1, w, y, TEXT_ARGB)
+    if l2 is not None:
+      draw_text(graphics, font, l2, w, y + 11, TEXT2_ARGB)
+  except Exception as e:
+    hud_failed = True
+    hud_fail_reason = "screen text: " + short_error(e)
+
+def make_id(path):
+  try:
+    Identifier = JavaClass("net.minecraft.resources.Identifier")
+    return Identifier.fromNamespaceAndPath("anchorfinder", path)
+  except Exception:
+    RL = JavaClass("net.minecraft.resources.ResourceLocation")
+    return RL.fromNamespaceAndPath("anchorfinder", path)
+
+def find_bar_method(target):
+  for m in target.getClass().getMethods():
+    name = str(m.getName()).lower()
+    if "overlay" not in name and "actionbar" not in name:
+      continue
+    pt = m.getParameterTypes()
+    if len(pt) == 0 or str(pt[0].getName()) != "net.minecraft.network.chat.Component":
+      continue
+    if len(pt) == 1:
+      return (m, 1)
+    if len(pt) == 2 and str(pt[1].getName()) == "boolean":
+      return (m, 2)
+  return None
+
+def use_actionbar(reasons):
+  global display_mode, bar_method, bar_argc
+  found = None
+  try:
+    found = find_bar_method(mc.gui)
+  except Exception as e:
+    reasons.append("hotbar: " + short_error(e))
+  if found is not None:
+    bar_method = found[0]
+    bar_argc = found[1]
+    display_mode = "actionbar"
+    print("Anchor finder: showing distance as hotbar text.")
+    return
+  display_mode = "off"
+  print("Anchor finder: couldn't show distance text. Send me these lines:")
+  for r in reasons:
+    print(" - " + r)
+
+def setup_display():
+  global display_mode, hud_cb
+  reasons = []
+  if SCREEN_TEXT:
+    hud_cb = ManagedCallback(on_hud)
+    try:
+      Reg = JavaClass("net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry")
+      HudElement = JavaClass("net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement")
+      Reg.addLast(make_id("hud_" + my_token), HudElement(hud_cb))
+      display_mode = "screen"
+      return
+    except Exception as e:
+      reasons.append("hud registry: " + short_error(e))
+    try:
+      HRC = JavaClass("net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback")
+      HRC.EVENT.register(HRC(hud_cb))
+      display_mode = "screen"
+      return
+    except Exception as e:
+      reasons.append("hud callback: " + short_error(e))
+  use_actionbar(reasons)
+
+def update_display(t):
+  global screen_line1, screen_line2, screen_radar, display_checked
+  p = mc.player
+  dx = t[0] + 0.5 - p.getX()
+  dz = t[2] + 0.5 - p.getZ()
+  dy_blocks = to_int(JMath.floor(t[1] + 0.5) - JMath.floor(p.getY()))
+  dist = to_int(JMath.sqrt(dx * dx + (t[1] + 0.5 - p.getY()) ** 2 + dz * dz))
+  rel = JMath.toDegrees(JMath.atan2(-dx, dz)) - p.getYRot()
+  rel = ((rel % 360) + 540) % 360 - 180
+  idx = to_int(JMath.floorMod(to_int(JMath.round(rel / 45.0)), 8))
+  arrow = ARROWS[idx]
+  if t[3] >= HOTSPOT_SIZE:
+    name = f"HOTSPOT: {t[3]} ANCHORS"
+  elif t[3] > 1:
+    name = f"{t[3]} ANCHORS"
+  else:
+    name = "RESPAWN ANCHOR"
+  line1 = f"{arrow}  {name}  {dist} blocks  {arrow}"
+  if dy_blocks > 0:
+    hgt = f"{dy_blocks} blocks above you"
+  elif dy_blocks < 0:
+    hgt = f"{abs(dy_blocks)} blocks below you"
+  else:
+    hgt = "same height as you"
+  line2 = f"{hgt}  |  {len(clusters)} spots in range"
+
+  if display_mode == "screen" and not display_checked and tick_count > 60:
+    display_checked = True
+    if not hud_drawn:
+      use_actionbar(["screen text never appeared"])
+  if display_mode == "screen" and hud_failed:
+    use_actionbar([hud_fail_reason])
+
+  if display_mode == "screen":
+    screen_line1 = "§l" + line1
+    screen_line2 = line2
+    screen_radar = calc_radar(p, t)
+  elif display_mode == "actionbar":
+    msg = Component.literal(f"{line1}   ({line2})")
+    try:
+      msg = msg.withStyle(ChatFormatting.GOLD).withStyle(ChatFormatting.BOLD)
+    except Exception:
+      pass
+    try:
+      if bar_argc == 1:
+        bar_method.invoke(mc.gui, JavaArray((msg,)))
+      else:
+        bar_method.invoke(mc.gui, JavaArray((msg, False)))
+    except Exception as e:
+      display_off(e)
+
+def display_off(e):
+  global display_mode
+  display_mode = "off"
+  print(f"Anchor finder: hotbar text failed ({short_error(e)}). Send me this line.")
+
+def clear_display():
+  global screen_line1, screen_line2, screen_radar
+  screen_line1 = None
+  screen_line2 = None
+  screen_radar = None
+
+def shutdown(message):
+  global glow_active
+  glow_active = False
+  clear_display()
+  if hud_cb is not None:
+    try:
+      hud_cb.cancel()
+    except Exception:
+      pass
+  if str(System.getProperty(RUN_KEY)) == my_token:
+    System.setProperty(RUN_KEY, "")
+  remove_event_listener(listener_id)
+  if message is not None:
+    print(message)
+
+def report_fill():
+  global fill_reported
+  fill_reported = True
+  print("Anchor finder: radar/background boxes can't be drawn (" + fill_fail_reason + "). Text still works - send me this line.")
+
+def report_glow():
+  global glow_reported
+  glow_reported = True
+  print("Anchor finder: glow boxes can't be drawn (" + glow_fail_reason + "). Beam and text still work - send me this line.")
+
+def on_tick(event):
+  global last_level, tick_count, known, clusters, glow_active, anchor_group
+  if str(System.getProperty(RUN_KEY)) != my_token:
+    shutdown(None)
+    return
+  System.setProperty(BEAT_KEY, str(System.currentTimeMillis()))
+  try:
+    level = mc.level
+    if level is None or mc.player is None:
+      glow_active = False
+      clear_display()
+      return
+    if last_level is None or not level.equals(last_level):
+      last_level = level
+      known = {}
+      clusters = []
+      anchor_group = {}
+      start_sweep()
+    if not in_overworld(level):
+      glow_active = False
+      clear_display()
+      return
+    glow_active = True
+
+    step_sweep(level)
+
+    tick_count += 1
+    if not fill_ok and not fill_reported:
+      report_fill()
+    if not glow_ok and not glow_reported:
+      report_glow()
+    if tick_count % CLUSTER_EVERY == 0:
+      build_clusters(level)
+    t = nearest_cluster()
+    if t is None:
+      clear_display()
+      return
+    ex = mc.player.getX()
+    ey = mc.player.getEyeY()
+    ez = mc.player.getZ()
+    draw_beam(level, t, ex, ey, ez)
+    if RING and tick_count % 3 == 0:
+      draw_ring(level, t, ex, ey, ez)
+    if POINTER:
+      draw_pointer(level, t)
+    if MARKERS and tick_count % 4 == 0:
+      draw_markers(level, t, ex, ey, ez)
+    if display_mode == "screen" or tick_count % 5 == 0:
+      update_display(t)
+  except Exception as e:
+    shutdown(f"Anchor finder stopped because of an error: {short_error(e)}")
+
+def other_run_alive():
+  prev = System.getProperty(RUN_KEY)
+  if prev is None or str(prev) == "":
+    return False
+  beat = System.getProperty(BEAT_KEY)
+  if beat is None or str(beat) == "":
+    return False
+  return System.currentTimeMillis() - JDouble.valueOf(str(beat)) < 2000
+
+if other_run_alive():
+  System.setProperty(RUN_KEY, "")
+  print("Anchor finder stopped.")
+else:
+  my_token = str(System.nanoTime())
+  System.setProperty(RUN_KEY, my_token)
+  System.setProperty(BEAT_KEY, str(System.currentTimeMillis()))
+  setup_display()
+  listener_id = add_event_listener("tick", on_tick)
+  print(f"Anchor finder running - groups of {MIN_CLUSTER}+ anchors shown, {HOTSPOT_SIZE}+ marked HOTSPOT (only you can see it). Run \\anchorfinder again to stop.")
