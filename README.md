@@ -1,7 +1,9 @@
 # donutsmp_scripts
 Minescript scripts for DonutSMP: \marketmaker and \anchorfinder.
 
-READ EVERYTHING VERY IMPORTANT! Guys you can get banned with \marketmaker, but not \anchorfinder (VERY VERY SMALL CHANCE).
+READ EVERYTHING VERY IMPORTANT! 
+High chances of getting banned with \marketmaker speed set on: FAST, but on MEDIUM maybe lower chances.
+Really low likelihood of getting banned for using \anchorfinder
  
 # PREREQUISITES
 Minecraft Java 26.3 with:
