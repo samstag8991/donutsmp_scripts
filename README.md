@@ -30,7 +30,7 @@ It buys items cheaply through /orders and sells them for more on the auction hou
 Good items to add: golden apples (64x or 128x) and end crystals (64x or 128x). Run Scan spreads first, because prices change quickly.
 
 # \yes \no \auto
-When a round finishes, the script waits 15 seconds for your answer in chat:
+When a MARKETMAKER round finishes, the script waits 15 seconds for your answer in chat:
 - \yes starts the next round now, and asks again after every round.
 - \no stops the script, so no new round starts.
 - \auto starts the next round now and stops asking, so every following round continues on its own.
